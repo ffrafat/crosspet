@@ -171,7 +171,8 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
             if (darkness > 0 && bmpVal > 0 && bmpVal < 3) {
               bmpVal = (bmpVal > darkness) ? bmpVal - darkness : 1;
             }
-            if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
+            // X3 AA tuning: keep only the darker antialias level to avoid washed text
+            if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || (gpio.deviceIsX4() && bmpVal == 2))) {
               renderer.drawPixel(screenX, screenY, false);
             } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
               renderer.drawPixel(screenX, screenY, false);
