@@ -171,8 +171,8 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
             if (darkness > 0 && bmpVal > 0 && bmpVal < 3) {
               bmpVal = (bmpVal > darkness) ? bmpVal - darkness : 1;
             }
-            // X3 AA tuning: keep only the darker antialias level to avoid washed text
-            if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || (gpio.deviceIsX4() && bmpVal == 2))) {
+            // Dedicated X3 gray LUTs now provide proper 4-level gray on both devices
+            if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
               renderer.drawPixel(screenX, screenY, false);
             } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
               renderer.drawPixel(screenX, screenY, false);
@@ -864,7 +864,7 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
       if (renderMode == BW && val < 3) {
         drawPixel(screenX, screenY);
-      } else if (renderMode == GRAYSCALE_MSB && (val == 1 || (gpio.deviceIsX4() && val == 2))) {
+      } else if (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) {
         drawPixel(screenX, screenY, false);
       } else if (renderMode == GRAYSCALE_LSB && val == 1) {
         drawPixel(screenX, screenY, false);
