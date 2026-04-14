@@ -184,6 +184,22 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "[MEM] Free heap after server.begin(): %d bytes", ESP.getFreeHeap());
 }
 
+void CrossPointWebServer::abortWsUpload(const char* tag) {
+  // Explicit close() required: file-scope global persists beyond function scope
+  wsUploadFile.close();
+  String filePath = wsUploadPath;
+  if (!filePath.endsWith("/")) filePath += "/";
+  filePath += wsUploadFileName;
+  if (Storage.remove(filePath.c_str())) {
+    LOG_DBG(tag, "Deleted incomplete upload: %s", filePath.c_str());
+  } else {
+    LOG_DBG(tag, "Failed to delete incomplete upload: %s", filePath.c_str());
+  }
+  wsUploadInProgress = false;
+  wsUploadClientNum = 255;
+  wsLastProgressSent = 0;
+}
+
 void CrossPointWebServer::stop() {
   if (!running || !server) {
     LOG_DBG("WEB", "stop() called but already stopped (running=%d, server=%p)", running, server.get());
@@ -1277,6 +1293,21 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
           }
           esp_task_wdt_reset();
 
+          // Zero-byte upload: complete immediately without waiting for BIN frames
+          if (wsUploadSize == 0) {
+            // Explicit close() required: file-scope global persists beyond function scope
+            wsUploadFile.close();
+            wsLastCompleteName = wsUploadFileName;
+            wsLastCompleteSize = 0;
+            wsLastCompleteAt = millis();
+            LOG_DBG("WS", "Zero-byte upload complete: %s", filePath.c_str());
+            clearEpubCacheIfNeeded(filePath);
+            wsServer->sendTXT(num, "DONE");
+            wsLastProgressSent = 0;
+            break;
+          }
+
+          wsUploadClientNum = num;
           wsUploadInProgress = true;
           wsServer->sendTXT(num, "READY");
         } else {
@@ -1316,6 +1347,7 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
 
       // Check if upload complete
       if (wsUploadReceived >= wsUploadSize) {
+        // Explicit close() required: file-scope global persists beyond function scope
         wsUploadFile.close();
         wsUploadInProgress = false;
 

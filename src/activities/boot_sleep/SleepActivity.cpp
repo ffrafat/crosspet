@@ -247,7 +247,6 @@ void SleepActivity::renderCustomSleepScreen() const {
   if (dir && dir.isDirectory()) {
     sleepDir = "/.sleep";
   } else {
-    if (dir) dir.close();
     dir = Storage.open("/sleep");
     if (dir && dir.isDirectory()) {
       sleepDir = "/sleep";
@@ -260,23 +259,19 @@ void SleepActivity::renderCustomSleepScreen() const {
     // Collect BMP files by extension only (skip parseHeaders during scan)
     for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
       if (file.isDirectory()) {
-        file.close();
         continue;
       }
       file.getName(name, sizeof(name));
       auto filename = std::string(name);
       if (filename[0] == '.') {
-        file.close();
         continue;
       }
 
       if (!FsHelpers::hasBmpExtension(filename)) {
         LOG_DBG("SLP", "Skipping non-.bmp file name: %s", name);
-        file.close();
         continue;
       }
       files.emplace_back(filename);
-      file.close();
     }
     const auto numFiles = files.size();
     if (numFiles > 0) {
@@ -308,12 +303,9 @@ void SleepActivity::renderCustomSleepScreen() const {
           dir.close();
           return;
         }
-        file.close();
       }
     }
   }
-  if (dir) dir.close();
-
   // Look for sleep.bmp on the root of the sd card to determine if we should
   // render a custom sleep screen instead of the default.
   {
@@ -555,7 +547,6 @@ void SleepActivity::renderCoverSleepScreen() const {
       file.close();
       return;
     }
-    file.close();
   }
 
   return (this->*renderNoCoverSleepScreen)();

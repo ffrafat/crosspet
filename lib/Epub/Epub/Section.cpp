@@ -193,6 +193,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     }
     success = epub->readItemContentsToStream(localPath, tmpHtml, 1024);
     fileSize = tmpHtml.size();
+    // Explicitly close() file before calling Storage.remove()
     tmpHtml.close();
 
     // If streaming failed, remove the incomplete file immediately
@@ -242,6 +243,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   Storage.remove(tmpHtmlPath.c_str());
   if (!success) {
     LOG_ERR("SCT", "Failed to parse XML and build pages");
+    // Explicitly close() file before calling Storage.remove()
     file.close();
     Storage.remove(filePath.c_str());
     if (cssParser) {
@@ -263,6 +265,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
 
   if (hasFailedLutRecords) {
     LOG_ERR("SCT", "Failed to write LUT due to invalid page positions");
+    // Explicitly close() file before calling Storage.remove()
     file.close();
     Storage.remove(filePath.c_str());
     return false;
@@ -282,6 +285,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   serialization::writePod(file, pageCount);
   serialization::writePod(file, lutOffset);
   serialization::writePod(file, anchorMapOffset);
+  // Explicit close() required: member variable persists beyond function scope
   file.close();
   if (cssParser) {
     cssParser->clear();
@@ -331,7 +335,6 @@ std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) con
   uint32_t anchorMapOffset;
   serialization::readPod(f, anchorMapOffset);
   if (anchorMapOffset == 0 || anchorMapOffset >= fileSize) {
-    f.close();
     return std::nullopt;
   }
 
@@ -344,11 +347,9 @@ std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) con
     serialization::readString(f, key);
     serialization::readPod(f, page);
     if (key == anchor) {
-      f.close();
       return page;
     }
   }
 
-  f.close();
   return std::nullopt;
 }
