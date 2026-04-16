@@ -10,8 +10,8 @@ CrossPet is a Vietnamese fork of [CrossPoint Reader](https://github.com/crosspoi
 
 ## What's New in v1.8.3
 
-- **Custom fonts from SD card** — Drop `.bin` fonts into `/fonts/`, select in settings. Dual font model: primary + supplement for mixed scripts (e.g. Latin + CJK)
-- **Flashcards** — SM-2 spaced repetition. Import decks from SD card (`/flashcards/`, TSV format)
+- **Custom fonts from SD card** — Drop `.bin` fonts into `/fonts/`, select in settings. Dual font model: primary + supplement for mixed scripts (e.g. Latin + CJK). Generate `.bin` files at [xteink.lakafior.com](https://xteink.lakafior.com/)
+- **Flashcards** — SM-2 spaced repetition. Import `.csv` decks from SD card via in-app file picker
 - **Bluetooth keyboard (beta)** — Pair a BLE page turner or keyboard. Separate firmware build due to memory constraints
 
 ---
@@ -96,9 +96,37 @@ pio run -e gh_release   # Release build
 
 ```
 /fonts/          # Custom fonts (Xteink .bin format: FontName_size_WxH.bin)
-/flashcards/     # Flashcard decks (TSV: front<tab>back per line)
+/flashcard/      # Flashcard decks (.csv, imported via in-app file picker)
 /sleep/          # Sleep screen images (PNG/BMP)
 ```
+
+### Adding Custom Fonts
+
+1. Go to [xteink.lakafior.com](https://xteink.lakafior.com/) — the Xteink web font maker
+2. Upload a `.ttf` / `.otf`, tune weight + anti-aliasing in the live preview
+3. Click **Convert to .BIN**
+4. Rename to `FontName_size_WxH.bin` — e.g. `Lexend_38_33x39.bin` (the firmware parses size + glyph box from the filename)
+5. Copy into SD `/fonts/` and reboot. The font appears in **Settings → Font**
+
+Dual-font: pick a **primary** (e.g. Latin) and **supplement** (e.g. CJK) — mixed-script text renders correctly without glyph fallback gaps.
+
+### Adding Flashcards
+
+Decks are CSV files. Header row required:
+
+```csv
+card_id,front_content,back_content,sr_due,sr_interval,sr_ease
+1,"What is 2+2?","4",,,
+2,"Bonjour \ greeting \","Hello",,,
+3,"Line one/nLine two","Back side",,,
+```
+
+- **SRS fields** (`sr_due`, `sr_interval`, `sr_ease`) — leave empty for new cards; the app fills them in on review
+- **Hint syntax** — wrap an optional hint inside `\ ... \` in `front_content` (shown smaller/dimmer during review)
+- **Newlines** — encode as `/n` inside a field
+- Max 500 cards per deck
+
+**Import:** Put the `.csv` anywhere on the SD card → launch **Flashcards** app → **Import** → pick file. The app copies it into `/flashcard/` and derives the deck name from the filename (`my_deck.csv` → *my deck*). Review settings (new cards/day, max reviews/day) live in the app's settings screen.
 
 ---
 
