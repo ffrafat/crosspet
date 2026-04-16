@@ -53,6 +53,9 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
   items.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});
   items.push_back({MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON});
   items.push_back({MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE});
+#ifdef ENABLE_BLE
+  items.push_back({MenuAction::BLE_REMOTE, StrId::STR_BLE_REMOTE});
+#endif
 
   return items;
 }
@@ -71,8 +74,12 @@ std::vector<EpubReaderMenuActivity::SectionInfo> EpubReaderMenuActivity::buildSe
   sects.push_back({"DISPLAY", idx, 5});
   idx += 5;
 
-  // FEATURES: always 5
-  sects.push_back({"FEATURES", idx, 5});
+  // FEATURES: 5 base + optional BLE
+  int featureCount = 5;
+#ifdef ENABLE_BLE
+  featureCount++;
+#endif
+  sects.push_back({"FEATURES", idx, featureCount});
 
   return sects;
 }

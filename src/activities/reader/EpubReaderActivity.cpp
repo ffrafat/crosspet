@@ -25,6 +25,9 @@
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
+#ifdef ENABLE_BLE
+#include "activities/settings/BluetoothSettingsActivity.h"
+#endif
 #include "ReadingStats.h"
 #include "StarredPagesActivity.h"
 #include "components/UITheme.h"
@@ -640,6 +643,34 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       requestUpdate();
       break;
     }
+#ifdef ENABLE_BLE
+    case EpubReaderMenuActivity::MenuAction::BLE_REMOTE: {
+      // Free book memory to make room for NimBLE (~40-50KB).
+      // Save position and path so we can reload after BLE settings exit.
+      const int savedSpine = currentSpineIndex;
+      const int savedPage = section ? section->currentPage : 0;
+      const std::string savedPath = epub ? epub->getPath() : "";
+      section.reset();
+      epub.reset();
+      LOG_INF("BLE", "Freed book memory for BLE. Heap: %d bytes", ESP.getFreeHeap());
+
+      startActivityForResult(
+          std::make_unique<BluetoothSettingsActivity>(renderer, mappedInput),
+          [this, savedSpine, savedPage, savedPath](const ActivityResult&) {
+            // Reload book after BLE settings exit
+            LOG_INF("BLE", "BLE settings closed. Reloading book. Heap: %d bytes", ESP.getFreeHeap());
+            if (!savedPath.empty()) {
+              epub = std::make_shared<Epub>(savedPath, "/.crosspoint");
+              if (epub->load(true, SETTINGS.embeddedStyle == 0)) {
+                currentSpineIndex = savedSpine;
+                nextPageNumber = savedPage;
+                section.reset();  // force re-layout on next render
+              }
+            }
+          });
+      break;
+    }
+#endif
     case EpubReaderMenuActivity::MenuAction::SYNC: {
       if (KOREADER_STORE.hasCredentials()) {
         const int currentPage = section ? section->currentPage : 0;

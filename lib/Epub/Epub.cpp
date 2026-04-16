@@ -347,21 +347,24 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 
   // Guard: check heap before loading — large EPUBs (2000+ chapters, 250KB+ OPF)
   // require ~80KB of working memory for parsing, indexing, and cache building.
-  // When cache exists and CSS is skipped (e.g. thumbnail generation), 40KB is enough.
-  constexpr size_t MIN_HEAP_FOR_EPUB_LOAD = 80 * 1024;
+  // When cache exists, loading from cache + skipping CSS only needs ~40KB.
+  constexpr size_t MIN_HEAP_FOR_EPUB_BUILD = 80 * 1024;
   constexpr size_t MIN_HEAP_FOR_CACHED_LOAD = 40 * 1024;
-  const size_t minRequired = (!buildIfMissing && skipLoadingCss) ? MIN_HEAP_FOR_CACHED_LOAD : MIN_HEAP_FOR_EPUB_LOAD;
-  const size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < minRequired) {
-    LOG_ERR("EBP", "Insufficient heap for ePub load: %zu bytes free (need %zu)", freeHeap, minRequired);
-    return false;
-  }
 
   // Initialize spine/TOC cache
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
 
-  // Try to load existing cache first
+  // Try to load existing cache first — cheap path, needs less heap
   if (bookMetadataCache->load()) {
+    const size_t freeHeap = ESP.getFreeHeap();
+    // Cached path: need enough for CssParser + section loading (~40KB)
+    // When CSS is skipped (BLE builds), even less is needed
+    const size_t minCached = skipLoadingCss ? MIN_HEAP_FOR_CACHED_LOAD : MIN_HEAP_FOR_EPUB_BUILD;
+    if (freeHeap < minCached) {
+      LOG_ERR("EBP", "Insufficient heap for cached ePub load: %zu bytes free (need %zu)", freeHeap, minCached);
+      bookMetadataCache.reset();
+      return false;
+    }
     // CssParser needed for inline style parsing even without CSS files
     cssParser.reset(new CssParser(cachePath));
     if (!skipLoadingCss) {
@@ -388,7 +391,13 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     return false;
   }
 
-  // Cache doesn't exist or is invalid, build it
+  // Cache doesn't exist or is invalid — need full 80KB for indexing
+  const size_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < MIN_HEAP_FOR_EPUB_BUILD) {
+    LOG_ERR("EBP", "Insufficient heap for ePub build: %zu bytes free (need %zu)", freeHeap, MIN_HEAP_FOR_EPUB_BUILD);
+    return false;
+  }
+
   // NOTE: CssParser creation deferred until after cache build to reduce peak heap
   // during the memory-intensive indexing phase (large EPUBs with 2000+ chapters)
   LOG_DBG("EBP", "Cache not found, building spine/TOC cache");
