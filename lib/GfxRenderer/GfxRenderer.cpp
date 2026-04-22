@@ -286,8 +286,12 @@ static bool tryRenderExternalGlyph(const GfxRenderer& renderer, int fontId,
   FontManager& fm = FontManager::getInstance();
   if (!fm.isExternalFontEnabled()) return false;
 
-  // Supplement mode: skip if built-in natively has this glyph
-  if (!fm.isExternalPrimary() && builtinFont.hasNativeGlyph(cp, style)) return false;
+  // Supplement mode: skip if built-in natively has this glyph.
+  // UI fonts always use supplement mode — primary mode on UI would trigger an
+  // SD read per Latin char across every screen, thrashing the LRU cache and
+  // risking WDT resets under load. Reader fonts honor the user-configured mode.
+  const bool supplementMode = !fm.isExternalPrimary() || !isReaderFont(fontId);
+  if (supplementMode && builtinFont.hasNativeGlyph(cp, style)) return false;
 
   ExternalFont* extFont = fm.getActiveFont();
   if (!extFont) return false;
