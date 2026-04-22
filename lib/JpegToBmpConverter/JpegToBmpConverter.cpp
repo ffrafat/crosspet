@@ -1,5 +1,6 @@
 #include "JpegToBmpConverter.h"
 
+#include <Arduino.h>
 #include <HalDisplay.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -7,8 +8,14 @@
 
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 #include "BitmapHelpers.h"
+
+// Pre-flight heap guard: must cover picojpeg state + rowBuffer + mcuRowBuffer + ditherer + scale accumulators.
+// Mirrors JpegToFramebufferConverter's MIN_FREE_HEAP_FOR_JPEG but tuned for the streaming thumb path
+// (no JPEGDEC object, smaller peak). Under-budget calls fail cleanly instead of abort()ing on plain `new`.
+constexpr size_t MIN_FREE_HEAP_FOR_THUMB = 40 * 1024;
 
 // Context structure for picojpeg callback
 struct JpegReadContext {
@@ -202,6 +209,14 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
                                                      bool oneBit, bool crop) {
   LOG_DBG("JPG", "Converting JPEG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
 
+  // Heap pre-flight: with BLE resident (~40-50KB) + active connection (~25KB), thumbnail
+  // decode can fail mid-allocation. Refuse early instead of abort()ing on an unchecked `new`.
+  const size_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < MIN_FREE_HEAP_FOR_THUMB) {
+    LOG_ERR("JPG", "Not enough heap for thumbnail decode (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_THUMB);
+    return false;
+  }
+
   // Setup context for picojpeg callback
   JpegReadContext context = {.file = jpegFile, .bufferPos = 0, .bufferFilled = 0};
 
@@ -330,16 +345,27 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
     return false;
   }
 
-  // Create ditherer if enabled
-  // Use OUTPUT dimensions for dithering (after prescaling)
+  // Create ditherer if enabled. Use std::nothrow: with -fno-exceptions a failed plain `new`
+  // calls abort() and resets the device. Returning false lets callers degrade gracefully.
   if (oneBit) {
-    // For 1-bit output, use Atkinson dithering for better quality
-    atkinson1BitDitherer = new Atkinson1BitDitherer(outWidth);
+    atkinson1BitDitherer = new (std::nothrow) Atkinson1BitDitherer(outWidth);
+    if (!atkinson1BitDitherer) {
+      LOG_ERR("JPG", "Failed to allocate 1-bit ditherer");
+      return false;
+    }
   } else if (!USE_8BIT_OUTPUT) {
     if (USE_ATKINSON) {
-      atkinsonDitherer = new AtkinsonDitherer(outWidth);
+      atkinsonDitherer = new (std::nothrow) AtkinsonDitherer(outWidth);
+      if (!atkinsonDitherer) {
+        LOG_ERR("JPG", "Failed to allocate Atkinson ditherer");
+        return false;
+      }
     } else if (USE_FLOYD_STEINBERG) {
-      fsDitherer = new FloydSteinbergDitherer(outWidth);
+      fsDitherer = new (std::nothrow) FloydSteinbergDitherer(outWidth);
+      if (!fsDitherer) {
+        LOG_ERR("JPG", "Failed to allocate FS ditherer");
+        return false;
+      }
     }
   }
 
@@ -350,8 +376,12 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   uint32_t nextOutY_srcStart = 0;  // Source Y where next output row starts (16.16 fixed point)
 
   if (needsScaling) {
-    rowAccum = new uint32_t[outWidth]();
-    rowCount = new uint32_t[outWidth]();
+    rowAccum = new (std::nothrow) uint32_t[outWidth]();
+    rowCount = new (std::nothrow) uint32_t[outWidth]();
+    if (!rowAccum || !rowCount) {
+      LOG_ERR("JPG", "Failed to allocate scale accumulators (outWidth=%d)", outWidth);
+      return false;
+    }
     nextOutY_srcStart = scaleY_fp;  // First boundary is at scaleY_fp (source Y for outY=1)
   }
 

@@ -7,6 +7,9 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Xtc.h>
+#ifdef ENABLE_BLE
+#include <BluetoothHIDManager.h>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -65,6 +68,21 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
 
 void HomeActivity::loadRecentCovers(int coverHeight) {
   recentsLoading = true;
+
+#ifdef ENABLE_BLE
+  // Skip cover thumbnail generation when a BT HID device is connected. NimBLE + GATT
+  // context eats ~65-75KB — decoding JPG/PNG on top fragments the heap and risks OOM.
+  // The converter-level heap guards (MIN_FREE_HEAP_FOR_THUMB / _PNG_THUMB) would catch
+  // this anyway, but skipping entirely avoids the loading popup flash + SD churn on
+  // every home re-entry while the remote is paired.
+  if (!BluetoothHIDManager::getInstance().getConnectedDevices().empty()) {
+    LOG_INF("HOME", "BT HID connected — skipping recent-book cover thumbnail generation");
+    recentsLoaded = true;
+    recentsLoading = false;
+    return;
+  }
+#endif
+
   Rect popup;
   bool showingLoading = false;
   bool anyChanged = false;

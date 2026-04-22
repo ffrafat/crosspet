@@ -1,6 +1,7 @@
 #include "Epub.h"
 
 #include <Arduino.h>  // yield()
+#include <new>        // std::nothrow (abort guard under -fno-exceptions)
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <JpegToBmpConverter.h>
@@ -348,11 +349,31 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   // Guard: check heap before loading — large EPUBs (2000+ chapters, 250KB+ OPF)
   // require ~80KB of working memory for parsing, indexing, and cache building.
   // When cache exists, loading from cache + skipping CSS only needs ~40KB.
+  // BLE builds: NimBLE keeps ~40–50KB resident once initialized, so the 80KB
+  // guard can pass with actual free heap that still aborts mid-parse when a
+  // malloc fails (exceptions disabled → abort() → WDT reset). Raise the
+  // build-path threshold to compensate.
+#ifdef ENABLE_BLE
+  constexpr size_t MIN_HEAP_FOR_EPUB_BUILD = 100 * 1024;
+  // BLE resident cost leaves ~35-45KB free. Cached load peaks at ~28KB
+  // (metadata hash + section index). Relax from 40KB → 30KB to let books
+  // open while remote is connected. std::nothrow in converters + null
+  // checks downstream prevent abort on the edge case.
+  constexpr size_t MIN_HEAP_FOR_CACHED_LOAD = 30 * 1024;
+#else
   constexpr size_t MIN_HEAP_FOR_EPUB_BUILD = 80 * 1024;
   constexpr size_t MIN_HEAP_FOR_CACHED_LOAD = 40 * 1024;
+#endif
 
-  // Initialize spine/TOC cache
-  bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  // Initialize spine/TOC cache (std::nothrow: -fno-exceptions → abort() on fail)
+  {
+    auto* cache = new (std::nothrow) BookMetadataCache(cachePath);
+    if (!cache) {
+      LOG_ERR("EBP", "Failed to allocate BookMetadataCache (heap=%zu)", ESP.getFreeHeap());
+      return false;
+    }
+    bookMetadataCache.reset(cache);
+  }
 
   // Try to load existing cache first — cheap path, needs less heap
   if (bookMetadataCache->load()) {
@@ -366,7 +387,13 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
       return false;
     }
     // CssParser needed for inline style parsing even without CSS files
-    cssParser.reset(new CssParser(cachePath));
+    auto* parser = new (std::nothrow) CssParser(cachePath);
+    if (!parser) {
+      LOG_ERR("EBP", "Failed to allocate CssParser (heap=%zu)", ESP.getFreeHeap());
+      bookMetadataCache.reset();
+      return false;
+    }
+    cssParser.reset(parser);
     if (!skipLoadingCss) {
       // Rebuild CSS cache when missing or when cache version changed (loadFromCache removes stale file)
       if (!cssParser->hasCache() || !cssParser->loadFromCache()) {
@@ -483,14 +510,26 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   }
 
   // Reload the cache from disk so it's in the correct state
-  bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  {
+    auto* cache = new (std::nothrow) BookMetadataCache(cachePath);
+    if (!cache) {
+      LOG_ERR("EBP", "Failed to reallocate BookMetadataCache post-build (heap=%zu)", ESP.getFreeHeap());
+      return false;
+    }
+    bookMetadataCache.reset(cache);
+  }
   if (!bookMetadataCache->load()) {
     LOG_ERR("EBP", "Failed to reload cache after writing");
     return false;
   }
 
   // Create CssParser after cache build to reduce peak heap during indexing
-  cssParser.reset(new CssParser(cachePath));
+  auto* parser = new (std::nothrow) CssParser(cachePath);
+  if (!parser) {
+    LOG_ERR("EBP", "Failed to allocate CssParser post-build (heap=%zu)", ESP.getFreeHeap());
+    return false;
+  }
+  cssParser.reset(parser);
   if (!skipLoadingCss) {
     // Parse CSS files after cache reload
     parseCssFiles();
