@@ -67,6 +67,7 @@ struct ThemeMetrics {
   int keyboardVerticalOffset;
   int keyboardTextFieldWidthPercent;
   int keyboardWidthPercent;
+  int keyboardKeyCornerRadius;
 };
 
 enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Tools };
@@ -111,7 +112,8 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .keyboardCenteredText = false,
                                  .keyboardVerticalOffset = -13,
                                  .keyboardTextFieldWidthPercent = 85,
-                                 .keyboardWidthPercent = 90};
+                                 .keyboardWidthPercent = 90,
+                                 .keyboardKeyCornerRadius = 0};
 }
 
 class BaseTheme {
@@ -157,4 +159,9 @@ class BaseTheme {
                                const char* secondaryLabel = nullptr, KeyboardKeyType keyType = KeyboardKeyType::Normal,
                                bool inactiveSelection = false) const;
   virtual bool showsFileIcons() const { return false; }
+
+  // Shared constants and helpers for battery drawing (used by all themes)
+  static constexpr int batteryPercentSpacing = 4;
+  static void drawBatteryOutline(const GfxRenderer& renderer, int x, int y, int battWidth, int rectHeight);
+  static void drawBatteryLightningBolt(const GfxRenderer& renderer, int boltX, int boltY);
 };
