@@ -66,6 +66,11 @@ void OtaUpdateActivity::onEnter() {
 void OtaUpdateActivity::onExit() {
   Activity::onExit();
 
+  // Abort any in-progress OTA before disconnecting WiFi.
+  if (updater.isUpdateInProgress()) {
+    updater.cleanupUpdate();
+  }
+
   // Turn off wifi
   WiFi.disconnect(false);  // false = don't erase credentials, send disconnect frame
   delay(100);              // Allow disconnect frame to be sent
@@ -122,6 +127,13 @@ void OtaUpdateActivity::render(RenderLock&&) {
     renderer.drawCenteredText(
         UI_10_FONT_ID, y,
         (std::to_string(updater.getProcessedSize()) + " / " + std::to_string(updater.getTotalSize())).c_str());
+
+    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == UPDATE_CANCELLED) {
+    renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == NO_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NO_UPDATE), true, EpdFontFamily::BOLD);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
@@ -139,53 +151,63 @@ void OtaUpdateActivity::render(RenderLock&&) {
 }
 
 void OtaUpdateActivity::loop() {
-  // TODO @ngxson : refactor this logic later
-  if (updater.getRender()) {
-    requestUpdate();
-  }
-
   if (state == WAITING_CONFIRMATION) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      LOG_DBG("OTA", "New update available, starting download...");
+      LOG_DBG("OTA", "Starting non-blocking OTA download...");
       {
         RenderLock lock(*this);
         state = UPDATE_IN_PROGRESS;
       }
       requestUpdateAndWait();
-      const auto res = updater.installUpdate();
-
-      if (res != OtaUpdater::OK) {
-        LOG_DBG("OTA", "Update failed: %d", res);
-        {
-          RenderLock lock(*this);
-          state = FAILED;
-        }
-        requestUpdate();
-        return;
-      }
-
-      {
+      const auto res = updater.beginInstallUpdate();
+      if (res != OtaUpdater::UPDATE_IN_PROGRESS) {
         RenderLock lock(*this);
-        state = FINISHED;
+        state = FAILED;
+        requestUpdate();
       }
+    }
+
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+      finish();
+    }
+    return;
+  }
+
+  if (state == UPDATE_IN_PROGRESS) {
+    // Drive one OTA step per loop tick — keeps button input responsive.
+    if (updater.getRender()) {
+      updater.clearRender();
       requestUpdate();
     }
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      finish();
+      updater.cancelUpdate();
     }
 
+    const auto res = updater.performInstallUpdateStep();
+    if (res == OtaUpdater::UPDATE_IN_PROGRESS) {
+      return;
+    }
+    if (res == OtaUpdater::UPDATE_CANCELLED) {
+      RenderLock lock(*this);
+      state = UPDATE_CANCELLED;
+      requestUpdate();
+      return;
+    }
+    if (res != OtaUpdater::OK) {
+      LOG_ERR("OTA", "Update failed: %d", res);
+      RenderLock lock(*this);
+      state = FAILED;
+      requestUpdate();
+      return;
+    }
+    RenderLock lock(*this);
+    state = FINISHED;
+    requestUpdate();
     return;
   }
 
-  if (state == FAILED) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      finish();
-    }
-    return;
-  }
-
-  if (state == NO_UPDATE) {
+  if (state == FAILED || state == UPDATE_CANCELLED || state == NO_UPDATE) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       finish();
     }

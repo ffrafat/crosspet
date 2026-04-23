@@ -66,7 +66,8 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const 
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
 
   http.begin(*client, url.c_str());
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  http.setTimeout(30000);
   http.addHeader("User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
 
   if (!username.empty() && !password.empty()) {
@@ -117,7 +118,8 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   LOG_DBG("HTTP", "Destination: %s", destPath.c_str());
 
   http.begin(*client, url.c_str());
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  http.setTimeout(65535);  // max uint16_t (~65s) for large file downloads
   http.addHeader("User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
 
   if (!username.empty() && !password.empty()) {
@@ -158,6 +160,8 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   FileWriteStream fileStream(file, contentLength, progress);
   const int writeResult = http.writeToStream(&fileStream);
 
+  // Flush before close so Storage.exists() reflects the file immediately.
+  file.flush();
   file.close();
   http.end();
 

@@ -43,6 +43,7 @@ class GfxRenderer {
   uint16_t panelHeight = HalDisplay::DISPLAY_HEIGHT;
   uint16_t panelWidthBytes = HalDisplay::DISPLAY_WIDTH_BYTES;
   uint32_t frameBufferSize = HalDisplay::BUFFER_SIZE;
+  size_t bwBufferChunkSize = BW_BUFFER_CHUNK_SIZE;  // actual chunk size used; may fall back on OOM
   std::vector<uint8_t*> bwBufferChunks;
   std::map<int, EpdFontFamily> fontMap;
 

@@ -43,6 +43,11 @@ void KOReaderAuthActivity::performAuthentication() {
     } else {
       state = FAILED;
       errorMessage = KOReaderSyncClient::errorString(result);
+      const char* detail = KOReaderSyncClient::lastFailureDetail();
+      if (detail && detail[0]) {
+        errorMessage += " — ";
+        errorMessage += detail;
+      }
     }
   }
   requestUpdate();
@@ -93,7 +98,12 @@ void KOReaderAuthActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, top + height + 10, tr(STR_SYNC_READY));
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_AUTH_FAILED), true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, top + height + 10, errorMessage.c_str());
+    const auto lines = renderer.wrappedText(UI_10_FONT_ID, errorMessage.c_str(), pageWidth - 20, 4);
+    int y = top + height + 10;
+    for (const auto& line : lines) {
+      renderer.drawCenteredText(UI_10_FONT_ID, y, line.c_str());
+      y += height;
+    }
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");

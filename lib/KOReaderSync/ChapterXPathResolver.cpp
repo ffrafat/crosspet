@@ -49,13 +49,21 @@ struct PathSegment {
   int index;
 };
 
-std::string buildParagraphXPath(const int spineIndex, const std::vector<PathSegment>& path, const int charOffset) {
+// textNodeIdx: 1-based text node index within the parent element.
+// Emit /text()[N].M form when N > 1 (matches KOReader crengine convention);
+// keep /text().M for N == 1 to stay backward-compatible with existing KOSync data.
+std::string buildParagraphXPath(const int spineIndex, const std::vector<PathSegment>& path, const int charOffset,
+                                 const int textNodeIdx = 1) {
   std::string xpath = "/body/DocFragment[" + std::to_string(spineIndex + 1) + "]/body";
   for (const auto& segment : path) {
     xpath += "/" + segment.name + "[" + std::to_string(segment.index) + "]";
   }
   if (charOffset > 0) {
-    xpath += "/text()." + std::to_string(charOffset);
+    if (textNodeIdx > 1) {
+      xpath += "/text()[" + std::to_string(textNodeIdx) + "]." + std::to_string(charOffset);
+    } else {
+      xpath += "/text()." + std::to_string(charOffset);
+    }
   }
   return xpath;
 }
@@ -416,6 +424,12 @@ class XPathProgressResolver final : public Print {
       paragraphVisibleChars = 0;
     }
 
+    // Push text-node tracking state AFTER any paragraph reset so
+    // elementTextNodeCodepointStart captures the correct base offset.
+    elementTextNodeCount.push_back(0);
+    elementTextNodeCodepointStart.push_back(paragraphVisibleChars);
+    inTextNode = false;
+
     depth++;
   }
 
@@ -431,6 +445,8 @@ class XPathProgressResolver final : public Print {
       insideBody = false;
       parentStates.clear();
       path.clear();
+      elementTextNodeCount.clear();
+      elementTextNodeCodepointStart.clear();
       return;
     }
 
@@ -445,6 +461,14 @@ class XPathProgressResolver final : public Print {
     if (!parentStates.empty()) {
       parentStates.pop_back();
     }
+    if (!elementTextNodeCount.empty()) {
+      elementTextNodeCount.pop_back();
+    }
+    if (!elementTextNodeCodepointStart.empty()) {
+      elementTextNodeCodepointStart.pop_back();
+    }
+    // Element boundary: next character data in parent is a new text node run.
+    inTextNode = false;
   }
 
   void onCharacterData(const XML_Char* data, const int len) {
@@ -452,12 +476,28 @@ class XPathProgressResolver final : public Print {
       return;
     }
 
+    // Track text node boundaries within the current element.
+    // Each continuous text run between element boundaries is a separate text node.
+    if (!inTextNode) {
+      inTextNode = true;
+      if (!elementTextNodeCount.empty()) {
+        elementTextNodeCount.back()++;
+        elementTextNodeCodepointStart.back() = paragraphVisibleChars;
+      }
+    }
+
     const size_t codepointCount = countUtf8Codepoints(data, len);
     const size_t nextVisibleChars = visibleChars + codepointCount;
     if (targetVisibleChar <= nextVisibleChars) {
       const size_t delta = targetVisibleChar - visibleChars;
-      const int charOffset = static_cast<int>(paragraphVisibleChars + delta);
-      xpath = buildParagraphXPath(spineIndex, path, std::max(1, charOffset));
+
+      // Compute codepoint offset within the current text node (not from paragraph start).
+      const size_t textNodeStart =
+          elementTextNodeCodepointStart.empty() ? 0 : elementTextNodeCodepointStart.back();
+      const int textNodeIdx = elementTextNodeCount.empty() ? 1 : elementTextNodeCount.back();
+      const int charOffset = static_cast<int>((paragraphVisibleChars - textNodeStart) + delta);
+
+      xpath = buildParagraphXPath(spineIndex, path, std::max(1, charOffset), textNodeIdx);
       stopped = true;
       XML_StopParser(parser, XML_FALSE);
       return;
@@ -477,6 +517,9 @@ class XPathProgressResolver final : public Print {
   int paragraphDepth = 0;
   size_t visibleChars = 0;
   size_t paragraphVisibleChars = 0;
+  bool inTextNode = false;  // reset on each element boundary; tracks text node runs
+  std::vector<int> elementTextNodeCount;         // per-element text node count, parallel to path
+  std::vector<size_t> elementTextNodeCodepointStart;  // paragraphVisibleChars at start of current text node
   std::vector<ParentState> parentStates;
   std::vector<PathSegment> path;
   std::string xpath;

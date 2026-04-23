@@ -10,6 +10,7 @@
 #include "KOReaderCredentialStore.h"
 
 int KOReaderSyncClient::lastHttpCode = 0;
+int KOReaderSyncClient::lastEspError = 0;
 
 namespace {
 // Device identifier for CrossPoint reader
@@ -49,6 +50,12 @@ esp_err_t httpEventHandler(esp_http_client_event_t* evt) {
       buf->data[buf->len] = '\0';
     }
   }
+  if (evt->event_id == HTTP_EVENT_REDIRECT && buf) {
+    // Redirect being followed — clear any body from the intermediate response
+    // (e.g. Werkzeug HTML) so the final response body accumulates cleanly.
+    buf->len = 0;
+    if (buf->data) buf->data[0] = '\0';
+  }
   return ESP_OK;
 }
 
@@ -83,6 +90,8 @@ esp_http_client_handle_t createClient(const char* url, ResponseBuffer* buf,
   config.buffer_size = HTTP_BUF_SIZE;
   config.buffer_size_tx = HTTP_BUF_SIZE;
   config.crt_bundle_attach = esp_crt_bundle_attach;
+  // Follow up to 3 redirects (DuckDNS, HTTP→HTTPS, path normalization).
+  config.max_redirection_count = 3;
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) return nullptr;
@@ -121,8 +130,14 @@ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
 
   LOG_DBG("KOSync", "Auth response: %d (err: %d)", httpCode, err);
 
+  lastEspError = err;
   if (err != ESP_OK) return NETWORK_ERROR;
-  if (httpCode == 200) return OK;
+  if (httpCode >= 300 && httpCode < 400) return REDIRECT_ERROR;
+  if (httpCode == 200) {
+    // Guard against reverse-proxy returning 200 + HTML instead of JSON.
+    if (!buf.data || buf.data[0] != '{') return SERVER_ERROR;
+    return OK;
+  }
   if (httpCode == 401) return AUTH_FAILED;
   return SERVER_ERROR;
 }
@@ -138,17 +153,32 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
   LOG_DBG("KOSync", "Getting progress: %s (heap: %u)", url.c_str(), (unsigned)ESP.getFreeHeap());
 
   ResponseBuffer buf;
-  esp_http_client_handle_t client = createClient(url.c_str(), &buf);
-  if (!client) return NETWORK_ERROR;
+  esp_err_t err = ESP_FAIL;
+  int httpCode = 0;
 
-  esp_err_t err = esp_http_client_perform(client);
-  const int httpCode = esp_http_client_get_status_code(client);
-  lastHttpCode = httpCode;
-  esp_http_client_cleanup(client);
+  // Retry up to 3 times on transient connect or EAGAIN failures.
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    buf.len = 0;
+    esp_http_client_handle_t client = createClient(url.c_str(), &buf);
+    if (!client) { err = ESP_FAIL; break; }
+
+    err = esp_http_client_perform(client);
+    httpCode = esp_http_client_get_status_code(client);
+    lastHttpCode = httpCode;
+    lastEspError = err;
+    esp_http_client_cleanup(client);
+
+    const bool retryable = (err == ESP_ERR_HTTP_CONNECT || err == ESP_ERR_HTTP_EAGAIN);
+    if (err == ESP_OK || !retryable || attempt == 3) break;
+
+    LOG_ERR("KOSync", "getProgress request failed on attempt %d, retrying", attempt);
+    delay(400 * attempt);
+  }
 
   LOG_DBG("KOSync", "Get progress response: %d (err: %d)", httpCode, err);
 
   if (err != ESP_OK) return NETWORK_ERROR;
+  if (httpCode >= 300 && httpCode < 400) return REDIRECT_ERROR;
 
   if (httpCode == 200 && buf.data) {
     JsonDocument doc;
@@ -197,20 +227,35 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   LOG_DBG("KOSync", "Request body: %s", body.c_str());
 
   ResponseBuffer buf;
-  esp_http_client_handle_t client = createClient(url.c_str(), &buf, HTTP_METHOD_PUT);
-  if (!client) return NETWORK_ERROR;
+  esp_err_t err = ESP_FAIL;
+  int httpCode = 0;
 
-  esp_http_client_set_header(client, "Content-Type", "application/json");
-  esp_http_client_set_post_field(client, body.c_str(), body.length());
+  // Retry up to 3 times on transient connect or EAGAIN failures.
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    buf.len = 0;
+    esp_http_client_handle_t client = createClient(url.c_str(), &buf, HTTP_METHOD_PUT);
+    if (!client) { err = ESP_FAIL; break; }
 
-  esp_err_t err = esp_http_client_perform(client);
-  const int httpCode = esp_http_client_get_status_code(client);
-  lastHttpCode = httpCode;
-  esp_http_client_cleanup(client);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, body.c_str(), body.length());
+
+    err = esp_http_client_perform(client);
+    httpCode = esp_http_client_get_status_code(client);
+    lastHttpCode = httpCode;
+    lastEspError = err;
+    esp_http_client_cleanup(client);
+
+    const bool retryable = (err == ESP_ERR_HTTP_CONNECT || err == ESP_ERR_HTTP_EAGAIN);
+    if (err == ESP_OK || !retryable || attempt == 3) break;
+
+    LOG_ERR("KOSync", "updateProgress request failed on attempt %d, retrying", attempt);
+    delay(400 * attempt);
+  }
 
   LOG_DBG("KOSync", "Update progress response: %d (err: %d)", httpCode, err);
 
   if (err != ESP_OK) return NETWORK_ERROR;
+  if (httpCode >= 300 && httpCode < 400) return REDIRECT_ERROR;
   if (httpCode == 200 || httpCode == 202) return OK;
   if (httpCode == 401) return AUTH_FAILED;
   return SERVER_ERROR;
@@ -236,7 +281,23 @@ const char* KOReaderSyncClient::errorString(Error error) {
       return "JSON parse error";
     case NOT_FOUND:
       return "No progress found";
+    case REDIRECT_ERROR:
+      return "Server redirected (check server URL)";
     default:
       return "Unknown error";
   }
+}
+
+const char* KOReaderSyncClient::lastFailureDetail() {
+  static char buf[160];
+  // Detect TLS handshake failures on HTTPS URLs — likely TLS 1.3, which the
+  // ESP32 mbedTLS build does not support.
+  if (lastHttpCode == 0 && lastEspError == ESP_ERR_HTTP_CONNECT) {
+    if (KOREADER_STORE.getBaseUrl().rfind("https", 0) == 0) {
+      snprintf(buf, sizeof(buf),
+               "TLS handshake failed. Server may require TLS 1.3 (unsupported). Try a different server or use HTTP.");
+      return buf;
+    }
+  }
+  return "";
 }

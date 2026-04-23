@@ -74,7 +74,6 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
       /* Default HTTP client buffer size 512 byte only */
       .buffer_size = 8192,
       .buffer_size_tx = 8192,
-      .skip_cert_common_name_check = true,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .keep_alive_enable = true,
   };
@@ -222,14 +221,16 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate() {
 
   esp_http_client_config_t client_config = {
       .url = otaUrl.c_str(),
-      .timeout_ms = 15000,
+      .timeout_ms = 30000,
       /* Default HTTP client buffer size 512 byte only
        * not sufficient to handle URL redirection cases or
        * parsing of large HTTP headers.
        */
+      /* GitHub release assets redirect to objects.githubusercontent.com CDN.
+       * Without max_redirection_count, esp_https_ota downloads 0 bytes and stalls. */
+      .max_redirection_count = 5,
       .buffer_size = 8192,
       .buffer_size_tx = 8192,
-      .skip_cert_common_name_check = true,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .keep_alive_enable = true,
   };
@@ -279,4 +280,88 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate() {
 
   LOG_INF("OTA", "Update completed");
   return OK;
+}
+
+OtaUpdater::OtaUpdaterError OtaUpdater::beginInstallUpdate() {
+  if (!isUpdateNewer()) return UPDATE_OLDER_ERROR;
+
+  cancelRequested = false;
+  render = false;
+
+  esp_http_client_config_t client_config = {
+      .url = otaUrl.c_str(),
+      .timeout_ms = 30000,
+      .max_redirection_count = 5,
+      .buffer_size = 8192,
+      .buffer_size_tx = 8192,
+      .crt_bundle_attach = esp_crt_bundle_attach,
+      .keep_alive_enable = true,
+  };
+  esp_https_ota_config_t ota_config = {
+      .http_config = &client_config,
+      .http_client_init_cb = http_client_set_header_cb,
+  };
+
+  esp_wifi_set_ps(WIFI_PS_NONE);
+
+  const esp_err_t err = esp_https_ota_begin(&ota_config, &otaHandle);
+  if (err != ESP_OK) {
+    LOG_ERR("OTA", "OTA begin failed: %s", esp_err_to_name(err));
+    otaHandle = nullptr;
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    return INTERNAL_UPDATE_ERROR;
+  }
+
+  return UPDATE_IN_PROGRESS;
+}
+
+OtaUpdater::OtaUpdaterError OtaUpdater::performInstallUpdateStep() {
+  if (!otaHandle) return INTERNAL_UPDATE_ERROR;
+
+  if (cancelRequested) {
+    cleanupUpdate();
+    return UPDATE_CANCELLED;
+  }
+
+  const esp_err_t err = esp_https_ota_perform(otaHandle);
+  processedSize = static_cast<size_t>(esp_https_ota_get_image_len_read(otaHandle));
+  render = true;
+
+  if (err == ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
+    return UPDATE_IN_PROGRESS;
+  }
+
+  if (err != ESP_OK) {
+    LOG_ERR("OTA", "OTA perform failed: %s", esp_err_to_name(err));
+    cleanupUpdate();
+    return HTTP_ERROR;
+  }
+
+  if (!esp_https_ota_is_complete_data_received(otaHandle)) {
+    LOG_ERR("OTA", "Incomplete OTA data received");
+    cleanupUpdate();
+    return INTERNAL_UPDATE_ERROR;
+  }
+
+  const esp_err_t finErr = esp_https_ota_finish(otaHandle);
+  otaHandle = nullptr;
+  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  if (finErr != ESP_OK) {
+    LOG_ERR("OTA", "OTA finish failed: %s", esp_err_to_name(finErr));
+    return INTERNAL_UPDATE_ERROR;
+  }
+
+  LOG_INF("OTA", "Non-blocking OTA update completed");
+  return OK;
+}
+
+void OtaUpdater::cancelUpdate() { cancelRequested = true; }
+
+void OtaUpdater::cleanupUpdate() {
+  if (otaHandle) {
+    esp_https_ota_abort(otaHandle);
+    otaHandle = nullptr;
+  }
+  cancelRequested = false;
+  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 }
