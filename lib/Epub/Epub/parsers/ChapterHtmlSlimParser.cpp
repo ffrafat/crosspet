@@ -818,8 +818,21 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
       }
 
       // 3-byte CJK
+      // IMPORTANT: CJK Unicode blocks start at U+2E80 (CJK Radicals Supplement).
+      // The range U+2000-U+2E7F includes General Punctuation (U+2000-U+206F) such as
+      // U+2018 '‘' left single quote, U+2019 '’' right single quote (typographic
+      // apostrophe used in "I'm"/"don't"), U+201C/U+201D double quotes, U+2013/U+2014
+      // dashes, U+2026 ellipsis — all 0xE2 0x80 0xXX in UTF-8. Treating these as CJK
+      // causes them to be split into standalone word tokens, breaking line-wrap at
+      // apostrophes and producing visually wide letter spacing.
+      //
+      // Narrow the range to actual CJK starter-byte patterns:
+      //   0xE2 0xBA-0xBF xx  → U+2E80-U+2FFF (CJK Radicals, Kangxi Radicals)
+      //   0xE3-0xE9 xx xx    → U+3000-U+9FFF (CJK Symbols/Punct, Hiragana, Katakana,
+      //                                         Bopomofo, Hangul, CJK Unified Ideographs)
       const bool isCjk3 = (i + 2 < len) &&
-                          ((b0 >= 0xE2 && b0 <= 0xE9) ||
+                          ((b0 == 0xE2 && b1 >= 0xBA && b1 <= 0xBF) ||
+                           (b0 >= 0xE3 && b0 <= 0xE9) ||
                            (b0 == 0xEF && b1 >= 0xA4 && b1 <= 0xAB) ||
                            (b0 == 0xEF && b1 >= 0xBC && b1 <= 0xBE));
       if (isCjk3) {

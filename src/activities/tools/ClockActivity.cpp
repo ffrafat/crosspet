@@ -2,9 +2,12 @@
 
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <WiFi.h>
+#include <esp_sntp.h>
 #include <sys/time.h>
 
 #include <ctime>
+#include <cstdlib>
 
 #include "CrossPointSettings.h"
 #include "components/UITheme.h"
@@ -49,6 +52,16 @@ void ClockActivity::onEnter() {
   monthOffset = 0;
   timeAvailable = isTimeValid();
   lastUpdateMs = millis();
+
+  // BUG-004: opportunistic NTP resync when user opens the clock screen while
+  // WiFi is already up. Non-blocking — fires a background sync that updates
+  // system time via sntp_set_time_sync_notification_cb (registered in main.cpp).
+  // Users who periodically use WiFi (Sync, Weather, OTA) get their RTC drift
+  // corrected without a dedicated "sync time" button.
+  if (WiFi.status() == WL_CONNECTED && !esp_sntp_enabled()) {
+    const char* tz = getenv("TZ");
+    configTzTime(tz ? tz : "UTC0", "pool.ntp.org", "time.google.com");
+  }
 
   // Manual mode: auto-enter time editing
   if (SETTINGS.clockMode == CrossPointSettings::CLOCK_MANUAL) {

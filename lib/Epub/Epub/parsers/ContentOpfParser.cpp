@@ -199,8 +199,27 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     // Feed watchdog on large manifests (2000+ items with disk I/O each)
     if (self->itemIndex.size() % 50 == 0) yield();
 
-    if (itemId == self->coverItemId) {
-      self->coverItemHref = href;
+    // BUG-009: case-insensitive match — OPF files in the wild sometimes declare
+    // <meta name="cover" content="cover"/> but the manifest uses <item id="Cover">
+    // (or vice versa). Spec-ambiguous but very common; strict strcmp missed them.
+    if (!self->coverItemId.empty() && itemId.size() == self->coverItemId.size()) {
+      bool equal = true;
+      for (size_t i = 0; i < itemId.size(); ++i) {
+        if (tolower(static_cast<unsigned char>(itemId[i])) !=
+            tolower(static_cast<unsigned char>(self->coverItemId[i]))) {
+          equal = false;
+          break;
+        }
+      }
+      if (equal) {
+        self->coverItemHref = href;
+      }
+    }
+
+    // BUG-009: remember the first image-type manifest item as a fallback cover.
+    // Used in endDocument() only when no explicit cover was declared/resolved.
+    if (self->firstImageHref.empty() && mediaType.compare(0, 6, "image/") == 0) {
+      self->firstImageHref = href;
     }
 
     if (mediaType == MEDIA_TYPE_NCX) {
@@ -363,6 +382,14 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
   if (self->state == IN_MANIFEST && (strcmp(name, "manifest") == 0 || strcmp(name, "opf:manifest") == 0)) {
     self->state = IN_PACKAGE;
     self->tempItemStore.close();
+    // BUG-009 fallback: if no cover was declared (or the declared id didn't
+    // resolve), use the first image from the manifest. Shelf thumbnails are
+    // better than a blank placeholder.
+    if (self->coverItemHref.empty() && !self->firstImageHref.empty()) {
+      LOG_DBG("COF", "No cover metadata found; falling back to first manifest image: %s",
+              self->firstImageHref.c_str());
+      self->coverItemHref = self->firstImageHref;
+    }
     return;
   }
 

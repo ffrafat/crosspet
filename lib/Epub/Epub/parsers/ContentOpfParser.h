@@ -42,6 +42,11 @@ class ContentOpfParser final : public Print {
   size_t maxItemIndexEntries = 0;
   bool useItemIndex = false;
 
+  // BUG-009 fallback: first image item in manifest, used when no cover metadata
+  // or when the referenced coverItemId doesn't resolve. Populated as we walk
+  // the manifest so we can fall back without a second pass.
+  std::string firstImageHref;
+
   static constexpr uint16_t LARGE_SPINE_THRESHOLD = 400;
 
   // FNV-1a hash function

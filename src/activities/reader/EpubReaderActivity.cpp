@@ -82,6 +82,18 @@ void EpubReaderActivity::onEnter() {
         LOG_DBG("ERS", "Ignoring stale last-page sentinel from progress cache");
         nextPageNumber = 0;
       }
+      // BUG-002: pre-fix (<v1.8.1) firmware could persist an out-of-range
+      // spineIndex (== spineItemsCount) when the user reached end-of-book.
+      // On wake/reopen this rendered as the "End of Book" screen every time.
+      // Detect stale/corrupt state and rewind to the last valid chapter so
+      // the user can resume reading.
+      const int spineCount = epub->getSpineItemsCount();
+      if (spineCount > 0 && currentSpineIndex >= spineCount) {
+        LOG_DBG("ERS", "Rewinding stale end-of-book state: spine %d -> %d, page -> 0",
+                currentSpineIndex, spineCount - 1);
+        currentSpineIndex = spineCount - 1;
+        nextPageNumber = 0;
+      }
       cachedSpineIndex = currentSpineIndex;
       LOG_DBG("ERS", "Loaded cache: %d, %d", currentSpineIndex, nextPageNumber);
     }
@@ -1042,12 +1054,15 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
 }
 
 void EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
-  // Guard: don't save out-of-bounds spine index (end-of-book state).
-  // Otherwise reopening the book would jump to the "finished" screen.
+  // BUG-002 guard: don't persist end-of-book state (spineIndex == spineItemsCount).
+  // The previous clamp-to-last-page behaviour caused a loop where each reopen
+  // landed on the last page, one page-turn re-triggered end-of-book, then the
+  // next sleep/wake re-persisted the same terminal state. Skipping the write
+  // preserves the last real reading position on disk.
   if (epub && spineIndex >= static_cast<int>(epub->getSpineItemsCount())) {
-    spineIndex = epub->getSpineItemsCount() - 1;
-    // Clamp to last page of last chapter
-    currentPage = (pageCount > 0) ? pageCount - 1 : 0;
+    LOG_DBG("ERS", "Skipping progress save for end-of-book state (spine %d >= count %d)",
+            spineIndex, epub->getSpineItemsCount());
+    return;
   }
 
   FsFile f;
