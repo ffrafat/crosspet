@@ -10,7 +10,10 @@
 #include "FsHelpers.h"
 
 namespace {
-constexpr uint8_t BOOK_CACHE_VERSION = 5;
+// Bump 5→6: BUG-009 cover extraction (case-insensitive id + first-image fallback)
+// requires re-parsing OPFs that were cached before the fix. One-shot rebuild on
+// first open per book; subsequent opens hit the new cache normally.
+constexpr uint8_t BOOK_CACHE_VERSION = 6;
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";

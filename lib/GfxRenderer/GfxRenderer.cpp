@@ -136,6 +136,11 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
     }
 
     if (is2Bit) {
+      // Hoist darkness out of the per-pixel loop. Even when getTextDarkness()
+      // is inline, keeping the value loop-invariant lets us pick a fast path
+      // once instead of branching on darkness inside ~96K iterations per page.
+      const uint8_t darkness = renderer.getTextDarkness();
+      const uint8_t bwThreshold = 1 + darkness;  // BW: render when bmpVal < threshold
       int pixelPosition = 0;
       for (int glyphY = 0; glyphY < height; glyphY++) {
         const int outerCoord = outerBase + glyphY;
@@ -151,29 +156,18 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
 
           const uint8_t byte = bitmap[pixelPosition >> 2];
           const uint8_t bit_index = (3 - (pixelPosition & 3)) * 2;
-          // the direct bit from the font is 0 -> white, 1 -> light gray, 2 -> dark gray, 3 -> black
-          // we swap this to better match the way images and screen think about colors:
-          // 0 -> black, 1 -> dark grey, 2 -> light grey, 3 -> white
+          // direct bit: 0->white, 3->black; swap to 0->black, 3->white
           uint8_t bmpVal = 3 - ((byte >> bit_index) & 0x3);
 
-          // Text darkness controls which gray pixels get rendered.
-          // darkness 0 (Normal):     BW renders bmpVal==0 only;  grayscale unchanged
-          // darkness 1 (Dark):       BW renders bmpVal<2;        grayscale shifts grays darker
-          // darkness 2 (Extra Dark): BW renders bmpVal<3 (all);  grayscale shifts all gray→black
-          const uint8_t darkness = renderer.getTextDarkness();
-
           if (renderMode == GfxRenderer::BW) {
-            // BW threshold: Normal=1 (black only), Dark=2 (+dark gray), Extra Dark=3 (all non-white)
-            if (bmpVal < (1 + darkness)) {
+            if (bmpVal < bwThreshold) {
               renderer.drawPixel(screenX, screenY, pixelState);
             }
           } else {
-            // Grayscale: shift gray pixels darker for AA rendering.
-            // Clamp to 1 (dark gray) instead of 0 to preserve anti-aliasing edges.
+            // Grayscale: shift gray pixels darker for AA. Clamp to 1 to preserve edges.
             if (darkness > 0 && bmpVal > 0 && bmpVal < 3) {
               bmpVal = (bmpVal > darkness) ? bmpVal - darkness : 1;
             }
-            // Dedicated X3 gray LUTs now provide proper 4-level gray on both devices
             if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
               renderer.drawPixel(screenX, screenY, false);
             } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {

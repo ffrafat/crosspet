@@ -101,38 +101,47 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
   int progress = 0;
 
   for (RecentBook& book : recentBooks) {
-    if (!book.coverBmpPath.empty()) {
+    // BUG-009 recovery: if coverBmpPath is empty (poisoned by prior failed
+    // generation before the cover-extraction fix), don't skip — derive the
+    // path from the epub itself and retry. New OPF parse benefits from the
+    // case-insensitive id match + first-image fallback.
+    bool generated = false;
+    if (FsHelpers::hasEpubExtension(book.path)) {
+      Epub epub(book.path, "/.crosspoint");
+      epub.load(false, true);
+
+      if (book.coverBmpPath.empty()) {
+        book.coverBmpPath = epub.getThumbBmpPath();
+      }
       std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
       if (!Storage.exists(coverPath.c_str())) {
-        bool generated = false;
-        // If epub, try to load the metadata for title/author and cover
-        if (FsHelpers::hasEpubExtension(book.path)) {
-          Epub epub(book.path, "/.crosspoint");
-          epub.load(false, true);
-
-          // Try to generate thumbnail image for Continue Reading card
+        if (!showingLoading) { showingLoading = true; popup = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP)); }
+        GUI.fillPopupProgress(renderer, popup, 10 + progress * (90 / (int)recentBooks.size()));
+        generated = epub.generateThumbBmp(coverHeight);
+        if (generated) {
+          RECENT_BOOKS.updateBook(book.path, book.title, book.author, book.coverBmpPath);
+        }
+        coverRendered = false;
+        requestUpdate();
+      }
+    } else if (FsHelpers::hasXtcExtension(book.path)) {
+      Xtc xtc(book.path, "/.crosspoint");
+      if (xtc.load()) {
+        if (book.coverBmpPath.empty()) {
+          book.coverBmpPath = xtc.getThumbBmpPath();
+        }
+        std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+        if (!Storage.exists(coverPath.c_str())) {
           if (!showingLoading) { showingLoading = true; popup = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP)); }
           GUI.fillPopupProgress(renderer, popup, 10 + progress * (90 / (int)recentBooks.size()));
-          generated = epub.generateThumbBmp(coverHeight);
-          if (!generated) {
-            RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
-            book.coverBmpPath = "";
-          }
-          coverRendered = false;
-          requestUpdate();
-        } else if (FsHelpers::hasXtcExtension(book.path)) {
-          // Handle XTC file
-          Xtc xtc(book.path, "/.crosspoint");
-          if (xtc.load()) {
-            if (!showingLoading) { showingLoading = true; popup = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP)); }
-            GUI.fillPopupProgress(renderer, popup, 10 + progress * (90 / (int)recentBooks.size()));
-            generated = xtc.generateThumbBmp(coverHeight);
-            if (!generated) { RECENT_BOOKS.updateBook(book.path, book.title, book.author, ""); book.coverBmpPath = ""; }
+          generated = xtc.generateThumbBmp(coverHeight);
+          if (generated) {
+            RECENT_BOOKS.updateBook(book.path, book.title, book.author, book.coverBmpPath);
           }
         }
-        if (generated) anyChanged = true;
       }
     }
+    if (generated) anyChanged = true;
     progress++;
   }
 
