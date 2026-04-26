@@ -2,11 +2,15 @@
 
 #include <Bitmap.h>
 #include <Epub.h>
+#include <FontDecompressor.h>
+#include <FontManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Xtc.h>
+
+extern FontDecompressor fontDecompressor;
 #ifdef ENABLE_BLE
 #include <BluetoothHIDManager.h>
 #endif
@@ -101,23 +105,49 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
   int progress = 0;
 
   for (RecentBook& book : recentBooks) {
-    // BUG-009 recovery: if coverBmpPath is empty (poisoned by prior failed
-    // generation before the cover-extraction fix), don't skip — derive the
-    // path from the epub itself and retry. New OPF parse benefits from the
-    // case-insensitive id match + first-image fallback.
     bool generated = false;
     if (FsHelpers::hasEpubExtension(book.path)) {
+      // Fast path: if both cover store entry and on-disk thumb already exist,
+      // skip Epub load entirely. Loading Epub allocates ~10-20KB (OPF parse +
+      // metadata cache); doing it 4× per home entry on a 46KB-free heap with
+      // an external font loaded fragments the heap badly enough to corrupt
+      // FreeRTOS mutex storage (xTaskPriorityDisinherit assert at home entry
+      // after KOReader sync). Only pay the load cost when recovery is needed.
+      if (!book.coverBmpPath.empty()) {
+        const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+        if (Storage.exists(coverPath.c_str())) {
+          progress++;
+          continue;
+        }
+      }
+
+      // Slow path: cover store entry is empty (BUG-009 poisoned) or thumb is
+      // missing on disk. Load Epub to derive cover path / regenerate thumb.
       Epub epub(book.path, "/.crosspoint");
       epub.load(false, true);
 
       if (book.coverBmpPath.empty()) {
         book.coverBmpPath = epub.getThumbBmpPath();
       }
-      std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+      const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
       if (!Storage.exists(coverPath.c_str())) {
         if (!showingLoading) { showingLoading = true; popup = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP)); }
         GUI.fillPopupProgress(renderer, popup, 10 + progress * (90 / (int)recentBooks.size()));
+
+        // Free font caches around JPEG decode: external font glyph cache
+        // (~34KB) + JPEGDEC working set (~33KB) overflows residual heap on
+        // ESP32-C3, causing decode to abort with "no cover" when external
+        // font is enabled. Caches are restored before returning.
+        const bool wasExtLoaded = FontMgr.isExternalFontEnabled() || FontMgr.isUiFontEnabled();
+        if (wasExtLoaded) {
+          fontDecompressor.clearCache();
+          FontMgr.unloadActiveFonts();
+        }
         generated = epub.generateThumbBmp(coverHeight);
+        if (wasExtLoaded) {
+          FontMgr.reloadActiveFonts();
+        }
+
         if (generated) {
           RECENT_BOOKS.updateBook(book.path, book.title, book.author, book.coverBmpPath);
         }
@@ -125,16 +155,34 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
         requestUpdate();
       }
     } else if (FsHelpers::hasXtcExtension(book.path)) {
+      // Same fast path for XTC: skip load when thumb already cached.
+      if (!book.coverBmpPath.empty()) {
+        const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+        if (Storage.exists(coverPath.c_str())) {
+          progress++;
+          continue;
+        }
+      }
       Xtc xtc(book.path, "/.crosspoint");
       if (xtc.load()) {
         if (book.coverBmpPath.empty()) {
           book.coverBmpPath = xtc.getThumbBmpPath();
         }
-        std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+        const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
         if (!Storage.exists(coverPath.c_str())) {
           if (!showingLoading) { showingLoading = true; popup = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP)); }
           GUI.fillPopupProgress(renderer, popup, 10 + progress * (90 / (int)recentBooks.size()));
+
+          const bool wasExtLoaded = FontMgr.isExternalFontEnabled() || FontMgr.isUiFontEnabled();
+          if (wasExtLoaded) {
+            fontDecompressor.clearCache();
+            FontMgr.unloadActiveFonts();
+          }
           generated = xtc.generateThumbBmp(coverHeight);
+          if (wasExtLoaded) {
+            FontMgr.reloadActiveFonts();
+          }
+
           if (generated) {
             RECENT_BOOKS.updateBook(book.path, book.title, book.author, book.coverBmpPath);
           }

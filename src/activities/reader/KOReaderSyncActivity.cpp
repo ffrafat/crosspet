@@ -4,6 +4,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <esp_http_client.h>
 #include <esp_sntp.h>
 
 #include <FontDecompressor.h>
@@ -64,6 +65,27 @@ void wifiOff() {
   WiFi.mode(WIFI_OFF);
   delay(100);
 }
+
+// Quick HTTP probe to detect captive-portal / no-internet wifi (e.g. cafe APs).
+// Returns true only when a known 204-No-Content endpoint responds with 204.
+// Captive portals redirect HTTP and return 200 + login HTML, so any non-204
+// status is treated as no-internet. Short timeout keeps total latency bounded
+// even when the AP silently drops outbound traffic.
+bool probeInternet() {
+  esp_http_client_config_t cfg = {};
+  cfg.url = "http://cp.cloudflare.com/generate_204";
+  cfg.timeout_ms = 4000;
+  cfg.buffer_size = 256;
+  cfg.buffer_size_tx = 256;
+  cfg.disable_auto_redirect = true;
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (!client) return false;
+  const esp_err_t err = esp_http_client_perform(client);
+  const int code = esp_http_client_get_status_code(client);
+  esp_http_client_cleanup(client);
+  LOG_DBG("KOSync", "Internet probe: err=%d code=%d", err, code);
+  return err == ESP_OK && code == 204;
+}
 }  // namespace
 
 void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
@@ -84,6 +106,21 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
     statusMessage = tr(STR_SYNCING_TIME);
   }
   requestUpdate(true);
+
+  // Captive-portal / no-internet check: cafe APs accept the join then either
+  // hijack DNS or block outbound traffic. Without this guard, NTP + TLS sync
+  // can spend ~45s in mbedTLS retries before giving up — appears as a freeze.
+  if (!probeInternet()) {
+    LOG_DBG("KOSync", "No internet (captive portal or blocked AP)");
+    wifiOff();
+    {
+      RenderLock lock(*this);
+      state = SYNC_FAILED;
+      statusMessage = tr(STR_SYNC_FAILED_MSG);
+    }
+    requestUpdate(true);
+    return;
+  }
 
   // Sync time with NTP before making API requests
   syncTimeWithNTP();

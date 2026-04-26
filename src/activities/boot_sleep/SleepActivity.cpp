@@ -215,8 +215,9 @@ void SleepActivity::onEnter() {
 }
 
 bool SleepActivity::displayCachedSleepScreen(const std::string& sourcePath) const {
+  // Wipe prior content with HALF_REFRESH first to prevent ghosting on the cached image
   renderer.clearScreen();
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   if (!SleepScreenCache::load(renderer, sourcePath)) {
     return false;
   }
