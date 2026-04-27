@@ -3,6 +3,7 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include "BanglaText/BanglaTextSupport.h"
 
 void EpdFont::getTextBounds(const char* string, const int startX, const int startY, int* minX, int* minY, int* maxX,
                             int* maxY) const {
@@ -22,7 +23,43 @@ void EpdFont::getTextBounds(const char* string, const int startX, const int star
   int32_t prevAdvanceFP = 0;  // 12.4 fixed-point: prev glyph's advance + next kern for snap
   uint32_t cp;
   uint32_t prevCp = 0;
-  while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&string)))) {
+  while (true) {
+    const uint8_t* startPtr = reinterpret_cast<const uint8_t*>(string);
+    cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&string));
+    if (cp == 0) break;
+
+    if (isBangla(cp)) {
+      std::string banglaRun;
+      banglaRun += std::string(reinterpret_cast<const char*>(startPtr), string - reinterpret_cast<const char*>(startPtr));
+      
+      while (true) {
+        const uint8_t* nextStartPtr = reinterpret_cast<const uint8_t*>(string);
+        uint32_t nextCp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&string));
+        if (nextCp == 0) break;
+        
+        if (isBangla(nextCp) || utf8IsCombiningMark(nextCp)) {
+            banglaRun += std::string(reinterpret_cast<const char*>(nextStartPtr), string - reinterpret_cast<const char*>(nextStartPtr));
+        } else {
+            string = reinterpret_cast<const char*>(nextStartPtr);
+            break;
+        }
+      }
+      
+      if (prevCp != 0) {
+        lastBaseX += fp4::toPixel(prevAdvanceFP); 
+      }
+      
+      int runWidth = measureBanglaRunWidth(banglaRun);
+      lastBaseX += runWidth;
+      
+      *maxX = std::max(*maxX, lastBaseX);
+      
+      prevCp = 0;
+      prevAdvanceFP = 0;
+      lastBaseTop = 0;
+      continue;
+    }
+
     const bool isCombining = utf8IsCombiningMark(cp);
 
     if (!isCombining) {

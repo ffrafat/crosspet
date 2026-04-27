@@ -11,6 +11,9 @@
 #include <algorithm>
 
 #include "FontCacheManager.h"
+#include "BanglaText/BanglaTextUtility.hpp"
+#include "BanglaText/BTGlyphDecoder.hpp"
+#include "BanglaText/BanglaMNRegular_25pt.h"
 
 // UI font IDs — values must match src/fontIds.h
 static constexpr int UI_FONT_IDS[] = {
@@ -302,6 +305,8 @@ static bool tryRenderExternalGlyph(const GfxRenderer& renderer, int fontId,
   return true;
 }
 
+#include "BanglaText/BanglaTextSupport.h"
+
 void GfxRenderer::drawCenteredText(const int fontId, const int y, const char* text, const bool black,
                                    const EpdFontFamily::Style style) const {
   const int x = (getScreenWidth() - getTextWidth(fontId, text, style)) / 2;
@@ -337,7 +342,39 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
   uint32_t cp;
   uint32_t prevCp = 0;
   constexpr int MIN_COMBINING_GAP_PX = 1;
-  while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text)))) {
+  while (true) {
+    const uint8_t* startPtr = reinterpret_cast<const uint8_t*>(text);
+    cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text));
+    if (cp == 0) break;
+
+    if (isBangla(cp)) {
+      std::string banglaRun;
+      banglaRun += std::string(reinterpret_cast<const char*>(startPtr), text - reinterpret_cast<const char*>(startPtr));
+      
+      while (true) {
+        const uint8_t* nextStartPtr = reinterpret_cast<const uint8_t*>(text);
+        uint32_t nextCp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text));
+        if (nextCp == 0) break;
+        
+        if (isBangla(nextCp) || utf8IsCombiningMark(nextCp)) {
+            banglaRun += std::string(reinterpret_cast<const char*>(nextStartPtr), text - reinterpret_cast<const char*>(nextStartPtr));
+        } else {
+            text = reinterpret_cast<const char*>(nextStartPtr);
+            break;
+        }
+      }
+      
+      if (prevCp != 0) {
+        lastBaseX += fp4::toPixel(prevAdvanceFP); 
+      }
+      
+      renderBanglaRun(*this, banglaRun, &lastBaseX, yPos, black);
+      prevCp = 0;
+      prevAdvanceFP = 0;
+      lastBaseTop = 0;
+      continue;
+    }
+
     if (utf8IsCombiningMark(cp)) {
       const EpdGlyph* combiningGlyph = font.getGlyph(cp, style);
       if (!combiningGlyph) continue;
